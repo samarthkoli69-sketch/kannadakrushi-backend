@@ -343,3 +343,166 @@ async def chat(
             status_code=502,
             detail=f"AI service unavailable: {str(exc)}",
         )
+    
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from sqlalchemy import text
+from pydantic import BaseModel
+
+
+TASK_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS kannadakrushi_ai_tasks (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    farm_id INTEGER,
+    field_id INTEGER,
+    title VARCHAR(255) NOT NULL,
+    details TEXT,
+    scheduled_for TIMESTAMPTZ NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'pending',
+    language VARCHAR(10) NOT NULL DEFAULT 'en',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+"""
+
+
+class TaskCreateRequest(BaseModel):
+    title: str
+    user_id: int
+    details: str | None = None
+    scheduled_for: datetime | None = None
+    farm_id: int | None = None
+    field_id: int | None = None
+    language: str = "en"
+
+
+def ensure_task_table(db: Session):
+    db.execute(text(TASK_TABLE_SQL))
+
+
+def task_dict(row):
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "farm_id": row["farm_id"],
+        "field_id": row["field_id"],
+        "title": row["title"],
+        "details": row["details"],
+        "scheduled_for": row["scheduled_for"].isoformat(),
+        "status": row["status"],
+        "language": row["language"],
+        "created_at": row["created_at"].isoformat(),
+        "updated_at": row["updated_at"].isoformat(),
+    }
+
+
+@router.post("/tasks")
+def create_task(data: TaskCreateRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == data.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    title = data.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Task title is required")
+
+    scheduled = data.scheduled_for or datetime.now(ZoneInfo("Asia/Kolkata"))
+    if scheduled.tzinfo is None:
+        scheduled = scheduled.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    try:
+        ensure_task_table(db)
+        result = db.execute(
+            text("""
+                INSERT INTO kannadakrushi_ai_tasks
+                (user_id, farm_id, field_id, title, details, scheduled_for, language)
+                VALUES
+                (:user_id, :farm_id, :field_id, :title, :details, :scheduled_for, :language)
+                RETURNING *
+            """),
+            {
+                "user_id": data.user_id,
+                "farm_id": data.farm_id,
+                "field_id": data.field_id,
+                "title": title,
+                "details": data.details,
+                "scheduled_for": scheduled,
+                "language": data.language or "en",
+            },
+        )
+        row = result.mappings().one()
+        db.commit()
+        return {"success": True, "task": task_dict(row)}
+    except Exception:
+        db.rollback()
+        raise
+
+
+def tasks_for_day(db: Session, user_id: int, offset: int):
+    if not db.query(User).filter(User.id == user_id).first():
+        raise HTTPException(status_code=404, detail="User not found")
+
+    target = datetime.now(ZoneInfo("Asia/Kolkata")).date() + timedelta(days=offset)
+
+    try:
+        ensure_task_table(db)
+        result = db.execute(
+            text("""
+                SELECT * FROM kannadakrushi_ai_tasks
+                WHERE user_id = :user_id
+                  AND (scheduled_for AT TIME ZONE 'Asia/Kolkata')::date = :target
+                ORDER BY scheduled_for
+            """),
+            {"user_id": user_id, "target": target},
+        )
+        rows = [task_dict(row) for row in result.mappings().all()]
+        db.commit()
+        return {
+            "success": True,
+            "date": target.isoformat(),
+            "count": len(rows),
+            "tasks": rows,
+        }
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.get("/tasks/today")
+def today_tasks(user_id: int, db: Session = Depends(get_db)):
+    return tasks_for_day(db, user_id, 0)
+
+
+@router.get("/tasks/tomorrow")
+def tomorrow_tasks(user_id: int, db: Session = Depends(get_db)):
+    return tasks_for_day(db, user_id, 1)
+
+
+@router.post("/tasks/{task_id}/complete")
+def complete_task(task_id: int, user_id: int, db: Session = Depends(get_db)):
+    if not db.query(User).filter(User.id == user_id).first():
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        ensure_task_table(db)
+        result = db.execute(
+            text("""
+                UPDATE kannadakrushi_ai_tasks
+                SET status = 'completed', updated_at = NOW()
+                WHERE id = :task_id AND user_id = :user_id
+                RETURNING *
+            """),
+            {"task_id": task_id, "user_id": user_id},
+        )
+        row = result.mappings().first()
+        if row is None:
+            db.rollback()
+            raise HTTPException(status_code=404, detail="Task not found")
+        db.commit()
+        return {"success": True, "task": task_dict(row)}
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise
