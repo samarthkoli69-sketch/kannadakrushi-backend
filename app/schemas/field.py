@@ -52,14 +52,22 @@ class FieldResponse(BaseModel):
     taluk: str | None
     district: str | None
     state: str
+
     boundary_geojson: dict | None
+
     satellite_monitoring_enabled: bool
     last_satellite_check: datetime | None
     latest_ndvi: float | None
     latest_satellite_status: str | None
+
     created_at: datetime
     updated_at: datetime
 
     model_config = {
         "from_attributes": True
     }
+
+
+# 🛰️ Update the exact field boundary
+class FieldBoundaryUpdate(BaseModel):
+    boundary_geojson: dict

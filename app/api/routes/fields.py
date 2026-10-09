@@ -3,7 +3,11 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.models.field import Field
-from app.schemas.field import FieldCreate, FieldResponse
+from app.schemas.field import (
+    FieldCreate,
+    FieldResponse,
+    FieldBoundaryUpdate,
+)
 
 
 router = APIRouter()
@@ -47,5 +51,36 @@ def get_field(
             status_code=404,
             detail="Field not found"
         )
+
+    return field
+
+
+# 🛰️ UPDATE FIELD SATELLITE BOUNDARY
+@router.patch(
+    "/{field_id}/boundary",
+    response_model=FieldResponse
+)
+def update_field_boundary(
+    field_id: int,
+    data: FieldBoundaryUpdate,
+    db: Session = Depends(get_db)
+):
+    field = db.query(Field).filter(
+        Field.id == field_id
+    ).first()
+
+    if not field:
+        raise HTTPException(
+            status_code=404,
+            detail="Field not found"
+        )
+
+    field.boundary_geojson = data.boundary_geojson
+
+    # Enable satellite monitoring automatically
+    field.satellite_monitoring_enabled = True
+
+    db.commit()
+    db.refresh(field)
 
     return field
