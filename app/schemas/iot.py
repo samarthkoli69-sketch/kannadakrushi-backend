@@ -1,3 +1,4 @@
+
 from datetime import datetime
 
 from pydantic import BaseModel
@@ -16,6 +17,13 @@ class IoTReadingCreate(BaseModel):
     rainfall: float | None = None
 
     recorded_at: datetime | None = None
+
+
+class DeviceRegistrationCreate(BaseModel):
+    device_id: str
+    field_id: int
+    device_type: str = "ESP32"
+    name: str | None = None
 
 
 class SensorResponse(BaseModel):
